@@ -1,8 +1,21 @@
 # Changelog
 
-## 0.15.7
+## 0.15.8
 
 <!-- release:start -->
+
+### Bug Fixes
+
+- **Terminal close cleanup**: Closing the terminal now stops dev servers launched directly, through Turbo, or in multi-app mode instead of leaving them running on their ports. (#450)
+- **Crashed session cleanup**: `portless run` and `portless prune` now stop orphaned command process groups from crashed sessions, including descendants outside the route port, while checking process identity before signaling. (#451)
+- **Windows command cleanup**: Normal exits and force-kills now terminate the command tree, including Turbo and its dev servers, so orphaned processes no longer keep consuming shell input. (#438)
+
+### Contributors
+
+- @Railly
+<!-- release:end -->
+
+## 0.15.7
 
 ### New Features
 
@@ -31,7 +44,6 @@
 - @Geektrovert
 - @thazhemadam
 - @begininvoke
-<!-- release:end -->
 
 ## 0.15.6
 
