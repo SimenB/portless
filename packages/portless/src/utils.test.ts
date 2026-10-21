@@ -210,6 +210,12 @@ describe("parseHostname", () => {
     expect(parseHostname("https://myapp")).toBe("myapp.localhost");
   });
 
+  it("strips an uppercase or mixed-case protocol", () => {
+    expect(parseHostname("HTTP://myapp.localhost")).toBe("myapp.localhost");
+    expect(parseHostname("HTTPS://myapp")).toBe("myapp.localhost");
+    expect(parseHostname("Https://MyApp/path")).toBe("myapp.localhost");
+  });
+
   it("strips path after hostname", () => {
     expect(parseHostname("myapp/some/path")).toBe("myapp.localhost");
   });
@@ -353,6 +359,13 @@ describe("parseHostnames", () => {
     expect(parseHostnames("app.dev.example.com", ["example.com", "dev.example.com"])).toEqual([
       "app.example.com",
       "app.dev.example.com",
+    ]);
+  });
+
+  it("strips an uppercase protocol before building hostnames", () => {
+    expect(parseHostnames("HTTPS://myapp.test", ["localhost", "test"])).toEqual([
+      "myapp.localhost",
+      "myapp.test",
     ]);
   });
 
