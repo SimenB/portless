@@ -197,6 +197,7 @@ Portless stores its state (routes, PID file, port file) in `~/.portless`. When t
 | `PORTLESS_TAILSCALE_HTTP` | Set to `1` to share on the tailnet over plain HTTP (same as `--tailscale-http`) |
 | `PORTLESS_FUNNEL`         | Set to `1` to share apps publicly via Tailscale Funnel (same as `--funnel`)     |
 | `PORTLESS_NGROK`          | Set to `1` to share apps publicly via ngrok (same as `--ngrok`)                 |
+| `PORTLESS_CLOUDFLARE`     | Set to `1` to share apps publicly via Cloudflare (same as `--cloudflare`)       |
 | `PORTLESS_STATE_DIR`      | Override the state directory                                                    |
 | `PORTLESS=0`              | Bypass the proxy, run the command directly                                      |
 
@@ -277,6 +278,15 @@ portless myapp --ngrok next dev
 
 Set `PORTLESS_NGROK=1` to enable ngrok by default when portless runs an app. `portless list` shows both local and ngrok URLs. The ngrok tunnel is cleaned up when the app exits. Requires the `ngrok` CLI to be installed and authenticated with `ngrok config add-authtoken <token>`.
 
+### Cloudflare sharing
+
+```bash
+portless myapp --cloudflare next dev
+# -> https://<random>.trycloudflare.com (public internet)
+```
+
+`--cloudflare` opens a Cloudflare quick tunnel; no Cloudflare account is needed. Set `PORTLESS_CLOUDFLARE=1` to enable it by default. The app gets `PORTLESS_CLOUDFLARE_URL`, `portless list` shows a `cloudflare:` line, and the tunnel stops when the app exits. It combines with `--ngrok`, `--tailscale` and `--funnel`. Quick tunnels do not support Server-Sent Events, allow at most 200 in-flight requests, and get a new URL every run. Requires the `cloudflared` CLI on PATH (https://developers.cloudflare.com/tunnel/downloads/).
+
 ## OS startup service
 
 Use the service command when users want the proxy to start automatically after reboot:
@@ -337,6 +347,7 @@ The chosen service configuration is written into launchd, systemd, or Task Sched
 | `portless <name> --tailscale-http <cmd>`          | Share on the tailnet over plain HTTP (no MagicDNS needed)      |
 | `portless <name> --funnel <cmd>`                  | Share the app publicly via Tailscale Funnel                    |
 | `portless <name> --ngrok <cmd>`                   | Share the app publicly via ngrok                               |
+| `portless <name> --cloudflare <cmd>`              | Share the app publicly via a Cloudflare quick tunnel           |
 | `portless <name> --force <cmd>`                   | Kill the existing process and take over its route              |
 | `portless --name <name> <cmd>`                    | Force `<name>` as app name (bypasses subcommand dispatch)      |
 | `portless <name> -- <cmd> [args...]`              | Stop flag parsing; everything after `--` is passed to child    |
@@ -501,3 +512,4 @@ Requires the ngrok CLI to be installed (https://ngrok.com/download) and on PATH.
 - `openssl` (for `--https` cert generation; ships with macOS and most Linux distributions; on Windows, install via `winget install -e --id ShiningLight.OpenSSL.Dev` or use the copy bundled with Git for Windows)
 - `tailscale` CLI (optional, for `--tailscale` and `--funnel`)
 - `ngrok` CLI (optional, for `--ngrok`)
+- `cloudflared` CLI (optional, for `--cloudflare`)
