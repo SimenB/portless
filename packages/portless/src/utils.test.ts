@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import {
   escapeHtml,
+  formatUptime,
   formatUrl,
   isErrnoException,
   isProcessAlive,
@@ -160,6 +161,38 @@ describe("formatUrl", () => {
   });
 });
 
+describe("formatUptime", () => {
+  const NOW = 1_700_000_000_000;
+
+  it.each([
+    [59_000, "59s"],
+    [60_000, "1m"],
+    [59 * 60_000, "59m"],
+    [60 * 60_000, "1h"],
+    [119 * 60_000, "1h"],
+    [23 * 60 * 60_000, "23h"],
+    [24 * 60 * 60_000, "1d"],
+    [400 * 24 * 60 * 60_000, "400d"],
+  ])("a route registered %d ms ago shows %s", (ageMs, expected) => {
+    expect(formatUptime(NOW - ageMs, NOW)).toBe(expected);
+  });
+
+  it("shows 0s for a registration time 30 seconds in the future", () => {
+    expect(formatUptime(NOW + 30_000, NOW)).toBe("0s");
+  });
+
+  it("shows nothing for a registration time 2 minutes in the future", () => {
+    expect(formatUptime(NOW + 120_000, NOW)).toBeNull();
+  });
+
+  it.each([undefined, 0, -1000, NaN, "1700000000000"])(
+    "shows nothing for an invalid registration time %s",
+    (registeredAt) => {
+      expect(formatUptime(registeredAt, NOW)).toBeNull();
+    }
+  );
+});
+
 describe("parseHostname", () => {
   it("appends .localhost to simple name", () => {
     expect(parseHostname("myapp")).toBe("myapp.localhost");
@@ -175,6 +208,12 @@ describe("parseHostname", () => {
 
   it("strips https:// protocol", () => {
     expect(parseHostname("https://myapp")).toBe("myapp.localhost");
+  });
+
+  it("strips an uppercase or mixed-case protocol", () => {
+    expect(parseHostname("HTTP://myapp.localhost")).toBe("myapp.localhost");
+    expect(parseHostname("HTTPS://myapp")).toBe("myapp.localhost");
+    expect(parseHostname("Https://MyApp/path")).toBe("myapp.localhost");
   });
 
   it("strips path after hostname", () => {
@@ -320,6 +359,13 @@ describe("parseHostnames", () => {
     expect(parseHostnames("app.dev.example.com", ["example.com", "dev.example.com"])).toEqual([
       "app.example.com",
       "app.dev.example.com",
+    ]);
+  });
+
+  it("strips an uppercase protocol before building hostnames", () => {
+    expect(parseHostnames("HTTPS://myapp.test", ["localhost", "test"])).toEqual([
+      "myapp.localhost",
+      "myapp.test",
     ]);
   });
 

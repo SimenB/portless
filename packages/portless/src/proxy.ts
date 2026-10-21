@@ -3,8 +3,15 @@ import * as http from "node:http";
 import * as http2 from "node:http2";
 import * as net from "node:net";
 import type { ProxyServerOptions } from "./types.js";
-import { createLoopbackConnection, escapeHtml, formatUrl } from "./utils.js";
-import { ARROW_SVG, renderPage } from "./pages.js";
+import { createLoopbackConnection, escapeHtml, formatUptime, formatUrl } from "./utils.js";
+import {
+  ARROW_SVG,
+  FILTER_CONTROLS,
+  FILTER_NO_MATCH,
+  FILTER_SCRIPT,
+  FILTER_THRESHOLD,
+  renderPage,
+} from "./pages.js";
 import {
   HOSTS_SYNC_AUTH_CHALLENGE_HEADER,
   HOSTS_SYNC_AUTH_HEADER,
@@ -34,6 +41,14 @@ const HOP_BY_HOP_HEADERS = new Set([
   "transfer-encoding",
   "upgrade",
 ]);
+
+/**
+ * Client hop-by-hop headers dropped before forwarding a plain request.
+ * Forwarding `Connection: keep-alive` leaves the backend socket open after
+ * the response with no error listener, so a backend restart crashes the
+ * proxy. `transfer-encoding` stays: it frames the streamed request body.
+ */
+const REQUEST_HOP_BY_HOP_HEADERS = ["connection", "keep-alive", "proxy-connection", "upgrade"];
 
 /**
  * Get the effective host value from a request.
@@ -186,12 +201,30 @@ function normalizeAuthority(host: string): string {
   return lower.endsWith(":443") ? lower.slice(0, -":443".length) : lower;
 }
 
+function findMostSpecificParent<T extends { hostname: string }>(
+  routes: T[],
+  hostname: string
+): T | undefined {
+  let best: T | undefined;
+  for (const r of routes) {
+    if (
+      hostname.endsWith("." + r.hostname.toLowerCase()) &&
+      (!best || r.hostname.length > best.hostname.length)
+    ) {
+      best = r;
+    }
+  }
+  return best;
+}
+
 /**
  * Find the route matching a request's host, which may include a port. Match
  * order: local hostname, tailscale authority (hostname and port), tailscale
  * hostname ignoring port, then wildcard subdomain. The authority tier
  * disambiguates apps sharing a `.ts.net` hostname on different ports; the
- * hostname tier keeps other-port requests resolving. `strict` drops the wildcard.
+ * hostname tier keeps other-port requests resolving. The wildcard tier picks the
+ * longest registered parent, so nested routes resolve regardless of storage
+ * order. `strict` drops the wildcard.
  * All comparisons run against the normalized authority so they are
  * case-insensitive and treat an explicit `:443` as the default HTTPS port.
  */
@@ -206,7 +239,7 @@ function findRoute(
     routes.find((r) => r.hostname.toLowerCase() === hostname) ||
     routes.find((r) => tailscaleAuthority(r.tailscaleUrl) === authority) ||
     routes.find((r) => tailscaleAuthority(r.tailscaleUrl)?.split(":")[0] === hostname) ||
-    (strict ? undefined : routes.find((r) => hostname.endsWith("." + r.hostname.toLowerCase())))
+    (strict ? undefined : findMostSpecificParent(routes, hostname))
   );
 }
 
@@ -317,9 +350,19 @@ export function createProxyServer(options: ProxyServerOptions): ProxyServer {
           ? host.slice(0, -matchedSuffix.length)
           : host;
       const safeSuggestion = escapeHtml(strippedHost);
+      const now = Date.now();
+      const filterable = routes.length > FILTER_THRESHOLD;
+      const items = routes
+        .map((r) => {
+          const age = formatUptime(r.registeredAt, now);
+          const label = r.pid === 0 ? "alias" : age && `up ${age}`;
+          const uptimeHtml = label ? `<span class="uptime">${label}</span>` : "";
+          return `<li><a href="${escapeHtml(formatUrl(r.hostname, proxyPort, reqTls))}" class="card-link"><span class="name">${escapeHtml(r.hostname)}</span><span class="meta">${uptimeHtml}<code class="port">127.0.0.1:${escapeHtml(String(r.port))}</code><span class="arrow">${ARROW_SVG}</span></span></a></li>`;
+        })
+        .join("");
       const routesList =
         routes.length > 0
-          ? `<div class="section"><p class="label">Active apps</p><ul class="card">${routes.map((r) => `<li><a href="${escapeHtml(formatUrl(r.hostname, proxyPort, reqTls))}" class="card-link"><span class="name">${escapeHtml(r.hostname)}</span><span class="meta"><code class="port">127.0.0.1:${escapeHtml(String(r.port))}</code><span class="arrow">${ARROW_SVG}</span></span></a></li>`).join("")}</ul></div>`
+          ? `<div class="section"><p class="label">Active apps</p>${filterable ? FILTER_CONTROLS : ""}<ul class="card">${items}</ul>${filterable ? FILTER_NO_MATCH : ""}</div>${filterable ? `<script>${FILTER_SCRIPT}</script>` : ""}`
           : '<p class="empty">No apps running.</p>';
       res.writeHead(404, { "Content-Type": "text/html" });
       res.end(
@@ -343,6 +386,9 @@ export function createProxyServer(options: ProxyServerOptions): ProxyServer {
       if (key.startsWith(":")) {
         delete proxyReqHeaders[key];
       }
+    }
+    for (const h of REQUEST_HOP_BY_HOP_HEADERS) {
+      delete proxyReqHeaders[h];
     }
     // HTTP/2 carries the hostname only in :authority (stripped above); restore
     // it as Host so Host-dependent backends (multi-tenant vhosts, framework

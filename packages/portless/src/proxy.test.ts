@@ -58,6 +58,13 @@ function listen(server: AnyServer): Promise<void> {
   });
 }
 
+function makeRoutes(count: number): RouteInfo[] {
+  return Array.from({ length: count }, (_, i) => ({
+    hostname: `app${i}.localhost`,
+    port: 4000 + i,
+  }));
+}
+
 describe("createProxyServer", () => {
   const servers: AnyServer[] = [];
 
@@ -118,6 +125,58 @@ describe("createProxyServer", () => {
       expect(res.body).toContain("api.localhost");
     });
 
+    it("shows uptime for a route registered 2 hours ago in the 404 page", async () => {
+      const routes: RouteInfo[] = [
+        { hostname: "api.localhost", port: 4001, registeredAt: Date.now() - 2 * 3600 * 1000 },
+      ];
+      const server = trackServer(
+        createProxyServer({ getRoutes: () => routes, proxyPort: TEST_PROXY_PORT })
+      );
+      await listen(server);
+
+      const res = await request(server, { host: "other.localhost" });
+      expect(res.status).toBe(404);
+      expect(res.body).toContain("up 2h");
+    });
+
+    it("shows an alias label instead of uptime for pid 0 routes in the 404 page", async () => {
+      const routes: RouteInfo[] = [
+        {
+          hostname: "db.localhost",
+          port: 4001,
+          pid: 0,
+          registeredAt: Date.now() - 2 * 3600 * 1000,
+        },
+      ];
+      const server = trackServer(
+        createProxyServer({ getRoutes: () => routes, proxyPort: TEST_PROXY_PORT })
+      );
+      await listen(server);
+
+      const res = await request(server, { host: "other.localhost" });
+      expect(res.body).toContain('class="uptime">alias<');
+      expect(res.body).not.toContain("up 2h");
+    });
+
+    it("renders routes without a valid registeredAt with no uptime in the 404 page", async () => {
+      const routes = [
+        { hostname: "old.localhost", port: 4001 },
+        { hostname: "bad.localhost", port: 4002, registeredAt: "yesterday" },
+      ] as RouteInfo[];
+      const server = trackServer(
+        createProxyServer({ getRoutes: () => routes, proxyPort: TEST_PROXY_PORT })
+      );
+      await listen(server);
+
+      const res = await request(server, { host: "other.localhost" });
+      expect(res.status).toBe(404);
+      expect(res.body).toContain("old.localhost");
+      expect(res.body).toContain("bad.localhost");
+      expect(res.body).toContain("127.0.0.1:4001");
+      expect(res.body).toContain("127.0.0.1:4002");
+      expect(res.body).not.toContain('class="uptime"');
+    });
+
     it("includes correct port in 404 page links", async () => {
       const routes: RouteInfo[] = [{ hostname: "myapp.localhost", port: 4001 }];
       const server = trackServer(createProxyServer({ getRoutes: () => routes, proxyPort: 8080 }));
@@ -137,6 +196,55 @@ describe("createProxyServer", () => {
       expect(res.status).toBe(404);
       expect(res.body).toContain('href="http://myapp.localhost"');
       expect(res.body).not.toContain(":80");
+    });
+
+    it("renders the filter controls and script only above 5 routes", async () => {
+      const five = trackServer(
+        createProxyServer({ getRoutes: () => makeRoutes(5), proxyPort: TEST_PROXY_PORT })
+      );
+      await listen(five);
+      const fiveRes = await request(five, { host: "other.localhost" });
+      expect(fiveRes.body).not.toContain('type="search"');
+      expect(fiveRes.body).not.toContain("<script>");
+
+      const six = trackServer(
+        createProxyServer({ getRoutes: () => makeRoutes(6), proxyPort: TEST_PROXY_PORT })
+      );
+      await listen(six);
+      const sixRes = await request(six, { host: "other.localhost" });
+      expect(sixRes.body).toContain('type="search"');
+      expect(sixRes.body).toContain("<script>");
+    });
+
+    it("renders the filter controls and no-match message hidden for a long list", async () => {
+      const server = trackServer(
+        createProxyServer({ getRoutes: () => makeRoutes(20), proxyPort: TEST_PROXY_PORT })
+      );
+      await listen(server);
+
+      const res = await request(server, { host: "other.localhost" });
+      expect(res.body).toMatch(/<div class="filter" hidden>/);
+      expect(res.body).toMatch(/<p class="empty" role="status" hidden>/);
+      const input = res.body.match(/<input[^>]*>/)![0];
+      expect(input).toContain('type="search"');
+      expect(input).toContain('autocomplete="off"');
+      expect(input).toContain("aria-label=");
+      expect(res.body).not.toContain("<form");
+    });
+
+    it("renders a newest-first toggle in the hidden controls row, rows in registration order", async () => {
+      const server = trackServer(
+        createProxyServer({ getRoutes: () => makeRoutes(20), proxyPort: TEST_PROXY_PORT })
+      );
+      await listen(server);
+
+      const res = await request(server, { host: "other.localhost" });
+      const controls = res.body.match(/<div class="filter" hidden>.*?<\/div>/)![0];
+      expect(controls).toContain(
+        '<button type="button" aria-pressed="false">Newest first</button>'
+      );
+      const names = [...res.body.matchAll(/app(\d+)\.localhost<\/span>/g)].map((m) => Number(m[1]));
+      expect(names).toEqual(Array.from({ length: 20 }, (_, i) => i));
     });
 
     it("proxies request to matching route", async () => {
@@ -184,6 +292,149 @@ describe("createProxyServer", () => {
       const res = await request(server, { host: "myapp.localhost" });
       expect(res.status).toBe(200);
       expect(res.body).toBe("hello from ipv6 backend");
+    });
+
+    it("routes a wildcard subdomain to the most specific parent in any order (issue #380)", async () => {
+      const backends = await Promise.all(
+        ["parent", "child"].map(async (name) => {
+          const backend = trackServer(http.createServer((_req, res) => res.end(name)));
+          await listen(backend);
+          const addr = backend.address();
+          if (!addr || typeof addr === "string") throw new Error("no addr");
+          return addr.port;
+        })
+      );
+      const parent = { hostname: "acme.localhost", port: backends[0] };
+      const child = { hostname: "api.acme.localhost", port: backends[1] };
+
+      for (const routes of [
+        [parent, child],
+        [child, parent],
+      ]) {
+        const server = trackServer(
+          createProxyServer({ getRoutes: () => routes, proxyPort: TEST_PROXY_PORT, strict: false })
+        );
+        await listen(server);
+        expect((await request(server, { host: "admin.api.acme.localhost" })).body).toBe("child");
+        expect((await request(server, { host: "tenant.acme.localhost" })).body).toBe("parent");
+        expect((await request(server, { host: "api.acme.localhost" })).body).toBe("child");
+      }
+    });
+
+    it("does not forward client hop-by-hop headers to the backend (issue #434)", async () => {
+      let received: http.IncomingHttpHeaders = {};
+      const backend = trackServer(
+        http.createServer((req, res) => {
+          received = req.headers;
+          res.end("ok");
+        })
+      );
+      await listen(backend);
+      const backendAddr = backend.address();
+      if (!backendAddr || typeof backendAddr === "string") throw new Error("no addr");
+
+      const routes: RouteInfo[] = [{ hostname: "myapp.localhost", port: backendAddr.port }];
+      const server = trackServer(
+        createProxyServer({ getRoutes: () => routes, proxyPort: TEST_PROXY_PORT })
+      );
+      await listen(server);
+
+      const res = await request(server, {
+        host: "myapp.localhost",
+        headers: {
+          connection: "keep-alive",
+          "keep-alive": "timeout=5",
+          "proxy-connection": "keep-alive",
+          upgrade: "h2c",
+        },
+      });
+      expect(res.status).toBe(200);
+      expect(received.connection).toBe("close");
+      expect(received["keep-alive"]).toBeUndefined();
+      expect(received["proxy-connection"]).toBeUndefined();
+      expect(received.upgrade).toBeUndefined();
+    });
+
+    it("survives a backend resetting a kept-alive connection (issue #434)", async () => {
+      const sockets = new Set<net.Socket>();
+      const backend = trackServer(
+        http.createServer((_req, res) => {
+          res.end("ok");
+        })
+      );
+      backend.on("connection", (socket) => {
+        sockets.add(socket);
+        socket.on("close", () => sockets.delete(socket));
+      });
+      await listen(backend);
+      const backendAddr = backend.address();
+      if (!backendAddr || typeof backendAddr === "string") throw new Error("no addr");
+
+      const routes: RouteInfo[] = [{ hostname: "myapp.localhost", port: backendAddr.port }];
+      const server = trackServer(
+        createProxyServer({ getRoutes: () => routes, proxyPort: TEST_PROXY_PORT })
+      );
+      await listen(server);
+
+      const uncaught: Error[] = [];
+      const onUncaught = (err: Error) => uncaught.push(err);
+      process.prependListener("uncaughtException", onUncaught);
+      try {
+        const first = await request(server, {
+          host: "myapp.localhost",
+          headers: { connection: "keep-alive" },
+        });
+        expect(first.status).toBe(200);
+        for (const socket of sockets) socket.resetAndDestroy();
+        await new Promise((resolve) => setTimeout(resolve, 100));
+
+        const second = await request(server, { host: "myapp.localhost" });
+        expect(second.status).toBe(200);
+        expect(uncaught).toEqual([]);
+      } finally {
+        process.removeListener("uncaughtException", onUncaught);
+      }
+    });
+
+    it("forwards a chunked DELETE body intact", async () => {
+      let body = "";
+      const backend = trackServer(
+        http.createServer((req, res) => {
+          req.on("data", (chunk) => (body += chunk));
+          req.on("end", () => res.end("ok"));
+        })
+      );
+      await listen(backend);
+      const backendAddr = backend.address();
+      if (!backendAddr || typeof backendAddr === "string") throw new Error("no addr");
+
+      const routes: RouteInfo[] = [{ hostname: "myapp.localhost", port: backendAddr.port }];
+      const server = trackServer(
+        createProxyServer({ getRoutes: () => routes, proxyPort: TEST_PROXY_PORT })
+      );
+      await listen(server);
+      const addr = server.address();
+      if (!addr || typeof addr === "string") throw new Error("no addr");
+
+      const status = await new Promise<number>((resolve, reject) => {
+        const req = http.request(
+          {
+            hostname: "127.0.0.1",
+            port: addr.port,
+            method: "DELETE",
+            headers: { host: "myapp.localhost", "transfer-encoding": "chunked" },
+          },
+          (res) => {
+            res.resume();
+            res.on("end", () => resolve(res.statusCode!));
+          }
+        );
+        req.on("error", reject);
+        req.write("part-one,");
+        req.end("part-two");
+      });
+      expect(status).toBe(200);
+      expect(body).toBe("part-one,part-two");
     });
 
     it("routes wildcard subdomain to matching parent route when strict is false", async () => {
@@ -1089,6 +1340,19 @@ describe("createProxyServer", () => {
       expect(res.status).toBe(404);
       expect(res.body).not.toContain("<script>alert(1)</script>");
       expect(res.body).toContain("&lt;script&gt;");
+    });
+
+    it("keeps a hostile requested host out of the filter script", async () => {
+      const server = trackServer(
+        createProxyServer({ getRoutes: () => makeRoutes(6), proxyPort: TEST_PROXY_PORT })
+      );
+      await listen(server);
+
+      const res = await request(server, { host: '"</script><script>' });
+      expect(res.status).toBe(404);
+      expect(res.body).toContain("&lt;/script&gt;&lt;script&gt;");
+      expect(res.body.match(/<script>/g)).toHaveLength(1);
+      expect(res.body.match(/<\/script>/g)).toHaveLength(1);
     });
 
     it("escapes route hostnames in active apps list", async () => {

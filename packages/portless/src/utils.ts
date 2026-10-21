@@ -149,6 +149,27 @@ export function formatUrl(hostname: string, proxyPort: number, tls = false): str
 }
 
 /**
+ * Format how long a route has been registered as one compact unit, such as
+ * `45s`, `12m`, `2h`, or `3d`. Uses floor rounding. A registration time up to
+ * 60 seconds ahead of `now` (clock skew, common on WSL2) shows `0s`. Returns
+ * null when there is no usable registration time, so callers can omit uptime.
+ */
+export function formatUptime(registeredAt: unknown, now: number): string | null {
+  if (typeof registeredAt !== "number" || !Number.isFinite(registeredAt) || registeredAt <= 0) {
+    return null;
+  }
+  const elapsedMs = now - registeredAt;
+  if (elapsedMs < -60000) return null;
+  const seconds = Math.floor(Math.max(elapsedMs, 0) / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+/**
  * Parse and normalize a hostname input for use as a subdomain of the
  * configured TLD. Strips protocol prefixes, validates characters, and
  * appends the TLD suffix if needed.
@@ -159,7 +180,7 @@ export function parseHostname(input: string, tld = "localhost"): string {
   // Remove any protocol prefix
   let hostname = input
     .trim()
-    .replace(/^https?:\/\//, "")
+    .replace(/^https?:\/\//i, "")
     .split("/")[0]
     .toLowerCase();
 
@@ -214,7 +235,7 @@ export function parseHostnames(input: string, tlds: readonly string[] = ["localh
   const uniqueTlds = [...new Set(tlds)];
   let baseInput = input
     .trim()
-    .replace(/^https?:\/\//, "")
+    .replace(/^https?:\/\//i, "")
     .split("/")[0]
     .toLowerCase();
 
