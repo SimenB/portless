@@ -259,7 +259,7 @@ portless myapp --tailscale-http next dev
 # -> http://100.101.102.103             (tailnet)
 ```
 
-It forwards the tailnet port straight to the app, addressed by the node's tailnet IP, so no certificate is needed. Tailnet traffic is WireGuard-encrypted either way. HTTP apps get port 80 first, then 8080, 8081, etc. It cannot be combined with `--funnel`, and the app does not receive the `Tailscale-User-*` and `X-Forwarded-*` headers that an HTTPS serve adds.
+It forwards the tailnet port straight to the app, addressed by the node's tailnet IP, so no certificate is needed. Tailnet traffic is WireGuard-encrypted either way, but browsers treat the URL as an insecure context, so secure-context APIs (service workers, camera and microphone, `crypto.subtle`) and `Secure` cookies do not work. HTTP apps get port 80 first, then 8080, 8081, etc. It cannot be combined with `--funnel`, and the app does not receive the `Tailscale-User-*` and `X-Forwarded-*` headers that an HTTPS serve adds.
 
 MagicDNS and Tailscale HTTPS certificates must both be enabled before `--tailscale` or `--funnel` can register HTTPS URLs. Funnel must also be enabled for the tailnet and node before `--funnel` can register the public URL. If a setting is missing, portless exits before starting the child process.
 

@@ -373,7 +373,7 @@ portless myapp --tailscale-http next dev
 # -> http://100.101.102.103             (tailnet)
 ```
 
-This forwards the tailnet port straight to the app, addressed by the node's tailnet IP, so no certificate is involved. All tailnet traffic is WireGuard-encrypted, so the plaintext hop exists only inside the tunnel. The only cost is a less pretty URL. HTTP apps get port 80 first, then 8080, 8081, etc.
+This forwards the tailnet port straight to the app, addressed by the node's tailnet IP, so no certificate is involved. All tailnet traffic is WireGuard-encrypted, so the plaintext hop exists only inside the tunnel. Browsers still treat a plain-HTTP tailnet URL as an insecure context: APIs that require a secure context (service workers, camera and microphone, `crypto.subtle`) are unavailable, and cookies marked `Secure` are not set. HTTP apps get port 80 first, then 8080, 8081, etc.
 
 `--tailscale-http` cannot be combined with `--funnel`: Funnel terminates TLS for the public internet and has no plain-HTTP mode. Because the forward is raw TCP, the app does not receive the `Tailscale-User-*` and `X-Forwarded-*` headers that an HTTPS serve adds.
 

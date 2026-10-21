@@ -675,6 +675,13 @@ describe("tailscale", () => {
       expect(calls[0]).toEqual(["serve", "--yes", "--tcp=80", "off"]);
     });
 
+    it("removes an http route's serve with --tcp", () => {
+      const calls: string[][] = [];
+      const runner = createRunner({ "serve --yes --tcp=80 off": { status: 0 } }, calls);
+      unregisterTailscale({ tailscaleHttpsPort: 80, tailscaleHttp: true }, { runner });
+      expect(calls).toEqual([["serve", "--yes", "--tcp=80", "off"]]);
+    });
+
     it("is a no-op when tailscaleHttpsPort is undefined", () => {
       expect(() => unregisterTailscale({})).not.toThrow();
     });

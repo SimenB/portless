@@ -509,15 +509,22 @@ export function unregisterFunnel(
  * Best-effort cleanup of a tailscale serve or funnel registration from a
  * route's metadata. Picks the right subcommand based on `tailscaleFunnel`.
  */
-export function unregisterTailscale(route: {
-  tailscaleHttpsPort?: number;
-  tailscaleFunnel?: boolean;
-  tailscaleHttp?: boolean;
-}): void {
+export function unregisterTailscale(
+  route: {
+    tailscaleHttpsPort?: number;
+    tailscaleFunnel?: boolean;
+    tailscaleHttp?: boolean;
+  },
+  options?: { runner?: TailscaleCommandRunner }
+): void {
   if (!route.tailscaleHttpsPort) return;
   const mode: TailscaleMode = route.tailscaleFunnel ? "funnel" : "serve";
   const scheme: ServeScheme = mode === "serve" && route.tailscaleHttp ? "http" : "https";
-  unregister(mode, route.tailscaleHttpsPort, { scheme, ignoreMissing: true });
+  unregister(mode, route.tailscaleHttpsPort, {
+    scheme,
+    ignoreMissing: true,
+    runner: options?.runner,
+  });
 }
 
 // ---------------------------------------------------------------------------
