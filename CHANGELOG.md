@@ -1,8 +1,27 @@
 # Changelog
 
-## 0.15.8
+## 0.15.9
 
 <!-- release:start -->
+
+### New Features
+
+- Added **Cloudflare quick tunnels** with `--cloudflare` to share apps through a public URL (#480)
+- Added **route uptime** to the proxy app list and `portless list` (#472)
+- Added **hostname filtering** and a **newest-first toggle** to the proxy's 404-page app list (#473, #474)
+
+### Bug Fixes
+
+- Fixed **uppercase URL schemes** so HTTP and HTTPS prefixes are removed correctly from hostnames (#484)
+
+### Contributors
+
+- @lahfir
+- @kumburovicbranko682-boop
+
+<!-- release:end -->
+
+## 0.15.8
 
 ### Bug Fixes
 
@@ -13,7 +32,6 @@
 ### Contributors
 
 - @Railly
-<!-- release:end -->
 
 ## 0.15.7
 
