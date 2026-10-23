@@ -288,6 +288,33 @@ function openssl(args: string[], options?: { input?: string }): string {
   }
 }
 
+const NOT_BEFORE_SKEW_MS = 5 * 60 * 1000;
+
+let notBeforeSupported: boolean | undefined;
+
+/** Whether `openssl x509 -req` accepts `-not_before` for the given `openssl version` output. */
+export function opensslSupportsNotBefore(version: string): boolean {
+  const match = /^OpenSSL (\d+)\.(\d+)/.exec(version.trim());
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  return major > 3 || (major === 3 && minor >= 4);
+}
+
+/** `-not_before` args that backdate a signed cert, or none if unsupported. */
+function backdatedNotBeforeArgs(): string[] {
+  if (notBeforeSupported === undefined) {
+    try {
+      notBeforeSupported = opensslSupportsNotBefore(openssl(["version"]));
+    } catch {
+      notBeforeSupported = false;
+    }
+  }
+  if (!notBeforeSupported) return [];
+  const start = new Date(Date.now() - NOT_BEFORE_SKEW_MS).toISOString();
+  return ["-not_before", start.replace(/[-:T]/g, "").slice(0, 14) + "Z"];
+}
+
 const execFileAsync = promisify(execFileCb);
 
 /**
@@ -310,6 +337,18 @@ async function opensslAsync(args: string[]): Promise<string> {
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`openssl failed: ${message}\n\n${opensslErrorMessage()}`);
   }
+}
+
+/** Async version of backdatedNotBeforeArgs. */
+async function backdatedNotBeforeArgsAsync(): Promise<string[]> {
+  if (notBeforeSupported === undefined) {
+    try {
+      notBeforeSupported = opensslSupportsNotBefore(await opensslAsync(["version"]));
+    } catch {
+      notBeforeSupported = false;
+    }
+  }
+  return backdatedNotBeforeArgs();
 }
 
 // ---------------------------------------------------------------------------
@@ -365,6 +404,7 @@ function generateCA(stateDir: string): { certPath: string; keyPath: string } {
       keyPath,
       "-out",
       certPath,
+      ...backdatedNotBeforeArgs(),
       "-days",
       CA_VALIDITY_DAYS.toString(),
       "-config",
@@ -458,6 +498,7 @@ function generateServerCert(stateDir: string): { certPath: string; keyPath: stri
     srlPath,
     "-out",
     serverCertPath,
+    ...backdatedNotBeforeArgs(),
     "-days",
     SERVER_VALIDITY_DAYS.toString(),
     "-extfile",
@@ -826,6 +867,7 @@ async function generateHostCertAsync(
     srlPath,
     "-out",
     certPath,
+    ...(await backdatedNotBeforeArgsAsync()),
     "-days",
     SERVER_VALIDITY_DAYS.toString(),
     "-extfile",
