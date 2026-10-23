@@ -27,6 +27,7 @@ const commandOptions: ExecFileSyncOptionsWithStringEncoding = {
   encoding: "utf-8",
   timeout: WINDOWS_COMMAND_TIMEOUT_MS,
   stdio: ["pipe", "pipe", "pipe"],
+  windowsHide: true,
 };
 
 const defaultRunner: WindowsCACommandRunner = (command, args, options) =>

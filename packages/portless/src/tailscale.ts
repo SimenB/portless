@@ -52,6 +52,7 @@ function defaultRunner(args: string[]): TailscaleCommandResult {
     encoding: "utf-8",
     killSignal: "SIGKILL",
     timeout: TAILSCALE_COMMAND_TIMEOUT_MS,
+    windowsHide: true,
   });
   return {
     status: result.status,

@@ -64,6 +64,7 @@ function defaultRunner(binary: string, args: string[]): TunnelCommandResult {
     encoding: "utf-8",
     killSignal: "SIGKILL",
     timeout: NGROK_COMMAND_TIMEOUT_MS,
+    windowsHide: true,
   });
   return {
     status: result.status,

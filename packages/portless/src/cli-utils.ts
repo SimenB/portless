@@ -1264,6 +1264,7 @@ export function findPidsOnPort(port: number): number[] {
       const output = execSync("netstat -ano -p tcp", {
         encoding: "utf-8",
         timeout: PID_LOOKUP_TIMEOUT_MS,
+        windowsHide: true,
       });
       const pid = parsePidFromNetstat(output, port);
       return pid === null ? [] : [pid];
@@ -1356,25 +1357,7 @@ export function killOrphanedProcessGroup(
  * Returns null if the PID cannot be determined.
  */
 export function findPidOnPort(port: number): number | null {
-  try {
-    if (isWindows) {
-      const output = execSync("netstat -ano -p tcp", {
-        encoding: "utf-8",
-        timeout: PID_LOOKUP_TIMEOUT_MS,
-      });
-      return parsePidFromNetstat(output, port);
-    }
-
-    const output = execSync(`lsof -ti tcp:${port} -sTCP:LISTEN`, {
-      encoding: "utf-8",
-      timeout: PID_LOOKUP_TIMEOUT_MS,
-    });
-    // lsof may return multiple PIDs (one per line); take the first
-    const pid = parseInt(output.trim().split("\n")[0], 10);
-    return isNaN(pid) ? null : pid;
-  } catch {
-    return null;
-  }
+  return findPidsOnPort(port)[0] ?? null;
 }
 
 /**
