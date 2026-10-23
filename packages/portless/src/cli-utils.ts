@@ -10,7 +10,7 @@ import { execFileSync, execSync, spawn } from "node:child_process";
 import { HOSTS_SYNC_PATH, PORTLESS_HEADER } from "./proxy.js";
 import { checkHostResolution, getManagedHostnames, syncHostsFile } from "./hosts.js";
 import { resolveScript, resolveScriptRaw } from "./config.js";
-import { createLoopbackConnection, resolveUserHome } from "./utils.js";
+import { createLoopbackConnection, parsePort, resolveUserHome } from "./utils.js";
 import {
   HOSTS_SYNC_AUTH_CHALLENGE_HEADER,
   HOSTS_SYNC_AUTH_HEADER,
@@ -392,8 +392,8 @@ export function getProtocolPort(tls: boolean): number {
 export function getDefaultPort(tls?: boolean): number {
   const envPort = process.env.PORTLESS_PORT;
   if (envPort) {
-    const port = parseInt(envPort, 10);
-    if (!isNaN(port) && port >= 1 && port <= 65535) return port;
+    const port = parsePort(envPort);
+    if (port !== null) return port;
   }
   return tls === undefined ? FALLBACK_PROXY_PORT : getProtocolPort(tls);
 }

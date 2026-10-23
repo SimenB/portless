@@ -1030,6 +1030,26 @@ describe("CLI", () => {
       expect(stderr).toContain("Invalid port");
     });
 
+    it("exits 1 without registering a route for a port with trailing text", () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "portless-alias-port-"));
+      try {
+        const { status, stderr } = run(["alias", "mydb", "192.168.1.1:8123"], {
+          env: { PORTLESS_STATE_DIR: tmpDir },
+        });
+        expect(status).toBe(1);
+        expect(stderr).toContain('Invalid port "192.168.1.1:8123"');
+        expect(fs.existsSync(path.join(tmpDir, "routes.json"))).toBe(false);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it("proxy stop exits 1 for a port with trailing text", () => {
+      const { status, stderr } = run(["proxy", "stop", "-p", "8123abc"]);
+      expect(status).toBe(1);
+      expect(stderr).toContain("Invalid port number: 8123abc");
+    });
+
     it("exits 1 when --remove has no name", () => {
       const { status, stderr } = run(["alias", "--remove"]);
       expect(status).toBe(1);

@@ -22,6 +22,7 @@ import {
   isProcessAlive as isPidAlive,
   parseHostname,
   parseHostnames,
+  parsePort,
 } from "./utils.js";
 import {
   checkHostResolution,
@@ -1705,8 +1706,8 @@ function parseAppPort(value: string | undefined): number {
     console.error(colors.red("Error: --app-port requires a port number."));
     process.exit(1);
   }
-  const port = parseInt(value, 10);
-  if (isNaN(port) || port < 1 || port > 65535) {
+  const port = parsePort(value);
+  if (port === null) {
     console.error(colors.red(`Error: Invalid app port "${value}". Must be 1-65535.`));
     process.exit(1);
   }
@@ -1716,8 +1717,8 @@ function parseAppPort(value: string | undefined): number {
 function appPortFromEnv(): number | undefined {
   const envVal = process.env.PORTLESS_APP_PORT;
   if (!envVal) return undefined;
-  const port = parseInt(envVal, 10);
-  if (isNaN(port) || port < 1 || port > 65535) {
+  const port = parsePort(envVal);
+  if (port === null) {
     console.error(colors.red(`Error: Invalid PORTLESS_APP_PORT="${envVal}". Must be 1-65535.`));
     process.exit(1);
   }
@@ -2521,8 +2522,8 @@ ${colors.bold("Examples:")}
   }
 
   const hostnames = buildHostnames(aliasName, tlds);
-  const port = parseInt(aliasPort, 10);
-  if (isNaN(port) || port < 1 || port > 65535) {
+  const port = parsePort(aliasPort);
+  if (port === null) {
     console.error(colors.red(`Error: Invalid port "${aliasPort}". Must be 1-65535.`));
     process.exit(1);
   }
@@ -3047,10 +3048,13 @@ async function handleProxy(args: string[]): Promise<void> {
     if (portIdx !== -1) {
       const portValue = args[portIdx + 1];
       if (portValue && !portValue.startsWith("-")) {
-        const parsed = parseInt(portValue, 10);
-        if (!isNaN(parsed) && parsed >= 1 && parsed <= 65535) {
-          explicitPort = parsed;
+        const parsed = parsePort(portValue);
+        if (parsed === null) {
+          console.error(colors.red(`Error: Invalid port number: ${portValue}`));
+          console.error(colors.blue("Port must be between 1 and 65535."));
+          process.exit(1);
         }
+        explicitPort = parsed;
       }
     }
 
@@ -3149,12 +3153,13 @@ ${colors.bold("LAN mode (--lan):")}
       console.error(colors.cyan("  portless proxy start -p 8080"));
       process.exit(1);
     }
-    proxyPort = parseInt(portValue, 10);
-    if (isNaN(proxyPort) || proxyPort < 1 || proxyPort > 65535) {
+    const parsed = parsePort(portValue);
+    if (parsed === null) {
       console.error(colors.red(`Error: Invalid port number: ${portValue}`));
       console.error(colors.blue("Port must be between 1 and 65535."));
       process.exit(1);
     }
+    proxyPort = parsed;
     hasExplicitPort = true;
   }
 

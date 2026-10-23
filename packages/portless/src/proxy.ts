@@ -3,7 +3,13 @@ import * as http from "node:http";
 import * as http2 from "node:http2";
 import * as net from "node:net";
 import type { ProxyServerOptions } from "./types.js";
-import { createLoopbackConnection, escapeHtml, formatUptime, formatUrl } from "./utils.js";
+import {
+  createLoopbackConnection,
+  escapeHtml,
+  formatUptime,
+  formatUrl,
+  parsePort,
+} from "./utils.js";
 import {
   ARROW_SVG,
   FILTER_CONTROLS,
@@ -80,7 +86,7 @@ function isLoopbackPeer(address: string | undefined): boolean {
 function hasValidPort(authority: string, hostname: string): boolean {
   if (authority === hostname) return true;
   const port = authority.slice(hostname.length + 1);
-  return /^\d+$/.test(port) && Number(port) >= 1 && Number(port) <= 65535;
+  return parsePort(port) !== null;
 }
 
 function isLoopbackAuthority(authority: string): boolean {
