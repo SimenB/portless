@@ -169,6 +169,8 @@ period.
 
 Outside LAN mode, the proxy and its HTTP redirect listener bind only to the IPv4 and IPv6 loopback addresses, `127.0.0.1` and `::1`. They do not accept connections through LAN, VPN, or other network interfaces.
 
+When portless itself returns an error (404 for an unknown host, 502 when the app is unreachable, 508 for a request loop), the body depends on the `Accept` header. Browsers (`text/html`) get an HTML page. curl, `fetch`, and other clients get JSON such as `{"error":"bad_gateway","upstream":"myapp.localhost","message":"..."}`, with `error` set to `not_found`, `bad_gateway`, or `loop_detected`. Parse that JSON instead of scraping HTML. Responses from the app itself are forwarded unchanged.
+
 `.localhost` domains resolve to `127.0.0.1` natively in Chrome, Firefox, and Edge. Safari relies on the system DNS resolver, which may not handle `.localhost` subdomains on all configurations. Run `portless hosts sync` to add entries to `/etc/hosts` if needed.
 
 Use `portless proxy start --tld localhost --tld test` to serve the same app names under multiple TLDs from one proxy. `PORTLESS_URL` uses the first configured TLD. When configured TLDs overlap (e.g. `example.com` and `dev.example.com`), hostnames are matched against the longest TLD first, regardless of configuration order. `PORTLESS_TLD` accepts the same comma separated list format, e.g. `PORTLESS_TLD=localhost,test`.

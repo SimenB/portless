@@ -274,6 +274,8 @@ flowchart TD
 
 Outside LAN mode, the proxy and its HTTP redirect listener bind only to the IPv4 and IPv6 loopback addresses, `127.0.0.1` and `::1`. They do not accept connections through LAN, VPN, or other network interfaces.
 
+When portless itself returns an error (404 for an unknown host, 502 when the app is unreachable, 508 for a request loop), browsers get a branded HTML page. Any client whose `Accept` header does not include `text/html`, such as curl or `fetch`, gets a small JSON body instead, e.g. `{"error":"bad_gateway","upstream":"myapp.localhost","message":"..."}`. Responses from your own app are forwarded unchanged.
+
 ## HTTP/2 + HTTPS
 
 HTTPS with HTTP/2 is enabled by default. Browsers limit HTTP/1.1 to 6 connections per host, which bottlenecks dev servers that serve many unbundled files (Vite, Nuxt, etc.). HTTP/2 multiplexes all requests over a single connection.
