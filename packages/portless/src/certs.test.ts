@@ -387,7 +387,46 @@ describe("createSNICallback", () => {
     expect(fs.existsSync(hostCertPath)).toBe(true);
 
     const cert = new crypto.X509Certificate(fs.readFileSync(hostCertPath));
-    expect(cert.subjectAltName).toContain("DNS:myapp.localhost");
+    expect(cert.subjectAltName).toBe("DNS:myapp.localhost");
+  });
+
+  it("reissues a cached host cert that has a bare TLD wildcard SAN", async () => {
+    const hostDir = path.join(tmpDir, "host-certs");
+    fs.mkdirSync(hostDir, { recursive: true });
+    const keyPath = path.join(hostDir, "myapp_localhost-key.pem");
+    const certPath = path.join(hostDir, "myapp_localhost.pem");
+    execFileSync("openssl", [
+      "ecparam",
+      "-genkey",
+      "-name",
+      "prime256v1",
+      "-noout",
+      "-out",
+      keyPath,
+    ]);
+    execFileSync("openssl", [
+      "req",
+      "-new",
+      "-x509",
+      "-key",
+      keyPath,
+      "-out",
+      certPath,
+      "-days",
+      "30",
+      "-subj",
+      "/CN=myapp.localhost",
+      "-addext",
+      "subjectAltName=DNS:myapp.localhost,DNS:*.localhost",
+    ]);
+
+    const sniCallback = createSNICallback(tmpDir, defaultCert, defaultKey);
+    await new Promise<void>((resolve, reject) => {
+      sniCallback("myapp.localhost", (err) => (err ? reject(err) : resolve()));
+    });
+
+    const cert = new crypto.X509Certificate(fs.readFileSync(certPath));
+    expect(cert.subjectAltName).toBe("DNS:myapp.localhost");
   });
 
   it("generates per-hostname cert for multi-level subdomains", async () => {

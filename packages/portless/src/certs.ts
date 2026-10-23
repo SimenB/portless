@@ -207,6 +207,19 @@ function isCertSansComplete(certPath: string): boolean {
 }
 
 /**
+ * Check whether a certificate has a wildcard SAN directly under a bare TLD
+ * (such as "*.localhost"). Apple platforms reject such certificates outright.
+ */
+function hasTldWildcardSan(certPath: string): boolean {
+  try {
+    const cert = new crypto.X509Certificate(fs.readFileSync(certPath));
+    return /DNS:\*\.[^.,\s]+(,|$)/.test(cert.subjectAltName ?? "");
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Check whether a certificate uses a strong signature algorithm.
  * Reject SHA-1 signatures to avoid OpenSSL "ca md too weak" failures.
  *
@@ -773,12 +786,9 @@ async function generateHostCertAsync(
   // Generate CSR
   await opensslAsync(["req", "-new", "-key", keyPath, "-out", csrPath, "-subj", `/CN=${cn}`]);
 
-  // Build SAN list: include the exact hostname plus a wildcard at the same level
-  // e.g., for "chat.json-render2.localhost" -> also add "*.json-render2.localhost"
   const sans = [`DNS:${hostname}`];
   const parts = hostname.split(".");
-  if (parts.length >= 2) {
-    // Add a wildcard for sibling subdomains at the same level
+  if (parts.length >= 3) {
     sans.push(`DNS:*.${parts.slice(1).join(".")}`);
   }
 
@@ -901,7 +911,8 @@ export function createSNICallback(
       fileExists(certPath) &&
       fileExists(keyPath) &&
       isCertValid(certPath) &&
-      isCertSignatureStrong(certPath)
+      isCertSignatureStrong(certPath) &&
+      !hasTldWildcardSan(certPath)
     ) {
       try {
         const hostCert = fs.readFileSync(certPath);
