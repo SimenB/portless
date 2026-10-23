@@ -1004,6 +1004,44 @@ describe("createProxyServer", () => {
       expect(res.headers.vary).toBeUndefined();
       expect(res.body).toBe(upstreamBody);
     });
+
+    it("keeps reading the request body after a 502 so the connection can be reused", async () => {
+      const routes: RouteInfo[] = [{ hostname: "dead.localhost", port: 59999 }];
+      const server = trackServer(
+        createProxyServer({
+          getRoutes: () => routes,
+          proxyPort: TEST_PROXY_PORT,
+          onError: () => {},
+        })
+      );
+      await listen(server);
+
+      const addr = server.address();
+      if (!addr || typeof addr === "string") throw new Error("no addr");
+
+      const bodySize = 1024 * 1024;
+      const client = net.createConnection(addr.port, "127.0.0.1");
+      const responses = await new Promise<number>((resolve, reject) => {
+        let data = "";
+        const count = () => (data.match(/HTTP\/1\.1 502/g) || []).length;
+        const timer = setTimeout(() => resolve(count()), 2000);
+        client.on("data", (chunk) => {
+          data += chunk;
+          if (count() === 2) {
+            clearTimeout(timer);
+            resolve(2);
+          }
+        });
+        client.on("error", reject);
+        client.write(
+          `POST / HTTP/1.1\r\nHost: dead.localhost\r\nContent-Length: ${bodySize}\r\n\r\n`
+        );
+        client.write(Buffer.alloc(bodySize));
+        client.write("GET / HTTP/1.1\r\nHost: dead.localhost\r\n\r\n");
+      });
+      client.destroy();
+      expect(responses).toBe(2);
+    });
   });
 
   describe("X-Portless header", () => {
