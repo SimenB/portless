@@ -601,6 +601,85 @@ describe("injectFrameworkFlags", () => {
     expect(args).toEqual(["astro", "dev", "--port", "4567", "--host", "127.0.0.1"]);
   });
 
+  it("injects for astro when a global flag precedes the subcommand", () => {
+    const devArgs = ["astro", "--root", "apps/web", "dev"];
+    injectFrameworkFlags(devArgs, 4567);
+    expect(devArgs).toEqual([
+      "astro",
+      "--root",
+      "apps/web",
+      "dev",
+      "--port",
+      "4567",
+      "--host",
+      "127.0.0.1",
+    ]);
+
+    const previewArgs = ["astro", "--config", "astro.config.mjs", "preview"];
+    injectFrameworkFlags(previewArgs, 4567);
+    expect(previewArgs).toEqual([
+      "astro",
+      "--config",
+      "astro.config.mjs",
+      "preview",
+      "--port",
+      "4567",
+      "--host",
+      "127.0.0.1",
+    ]);
+  });
+
+  it.each([[["--host", "0.0.0.0"]], [["--host=0.0.0.0"]]])(
+    "preserves an explicit astro host choice before the subcommand: %j",
+    (hostArgs) => {
+      const command = ["astro", "--root", "apps/web", ...hostArgs, "dev"];
+      const args = [...command];
+      injectFrameworkFlags(args, 4567);
+      expect(args).toEqual([...command, "--port", "4567"]);
+    }
+  );
+
+  it("injects astro flags before -- without treating trailing host data as an option", () => {
+    const args = ["astro", "--root", "apps/web", "dev", "--", "--host=0.0.0.0"];
+    injectFrameworkFlags(args, 4567);
+    expect(args).toEqual([
+      "astro",
+      "--root",
+      "apps/web",
+      "dev",
+      "--port",
+      "4567",
+      "--host",
+      "127.0.0.1",
+      "--",
+      "--host=0.0.0.0",
+    ]);
+  });
+
+  it.each([
+    ["--root", "dev"],
+    ["--root", "preview"],
+    ["--config", "dev"],
+    ["--config", "preview"],
+  ])("does not mistake astro %s %s for a server subcommand", (flag, value) => {
+    const command = ["astro", flag, value, "build"];
+    const args = [...command];
+    expect(injectFrameworkFlags(args, 4567)).toEqual([]);
+    expect(args).toEqual(command);
+  });
+
+  it.each([
+    ["--root", "dev"],
+    ["--root", "preview"],
+    ["--config", "dev"],
+    ["--config", "preview"],
+  ])("recognizes astro dev after the consumed value %s %s", (flag, value) => {
+    const command = ["astro", flag, value, "dev"];
+    const args = [...command];
+    injectFrameworkFlags(args, 4567);
+    expect(args).toEqual([...command, "--port", "4567", "--host", "127.0.0.1"]);
+  });
+
   it("injects for ng without --strictPort", () => {
     const args = ["ng", "serve"];
     injectFrameworkFlags(args, 4567);
