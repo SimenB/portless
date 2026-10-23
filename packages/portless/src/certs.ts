@@ -889,8 +889,14 @@ export function createSNICallback(
     // For .localhost: RFC 2606 §2 designates it as a reserved TLD, so
     // "*.localhost" sits at the public-suffix boundary and TLS specs do
     // not permit wildcard certificates at that level.
-    if (servername === "localhost" && configuredTlds.includes("localhost")) {
+    if (servername === "localhost") {
       cb(null, defaultCtx);
+      return;
+    }
+
+    const name = servername.toLowerCase();
+    if (!/^[a-z0-9.-]+$/.test(name) || !configuredTlds.some((tld) => name.endsWith(`.${tld}`))) {
+      cb(new Error(`Refusing certificate for ${servername}: not under a configured TLD`));
       return;
     }
 
@@ -994,6 +1000,8 @@ export function trustCA(stateDir: string): { trusted: boolean; error?: string } 
             "-d",
             "-r",
             "trustRoot",
+            "-p",
+            "ssl",
             "-k",
             "/Library/Keychains/System.keychain",
             caCertPath,
@@ -1004,7 +1012,7 @@ export function trustCA(stateDir: string): { trusted: boolean; error?: string } 
         const keychain = loginKeychainPath();
         execFileSync(
           "security",
-          ["add-trusted-cert", "-r", "trustRoot", "-k", keychain, caCertPath],
+          ["add-trusted-cert", "-r", "trustRoot", "-p", "ssl", "-k", keychain, caCertPath],
           { stdio: "pipe", timeout: MACOS_SECURITY_AUTH_TIMEOUT_MS }
         );
       }
