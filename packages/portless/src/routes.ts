@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { RouteInfo } from "./types.js";
-import { fixOwnership, isErrnoException } from "./utils.js";
+import { fixOwnership, isErrnoException, isProcessAlive as isPidAlive } from "./utils.js";
 
 /** How long (ms) before a lock directory is considered stale and forcibly removed. */
 const STALE_LOCK_THRESHOLD_MS = 10_000;
@@ -169,12 +169,7 @@ export class RouteStore {
   // ---------------------------------------------------------------------------
 
   private isProcessAlive(pid: number): boolean {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
+    return pid === 0 || isPidAlive(pid);
   }
 
   /**
