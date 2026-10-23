@@ -1,8 +1,24 @@
 # Changelog
 
-## 0.15.9
+## 0.15.10
 
 <!-- release:start -->
+
+### Bug Fixes
+
+- **Host certificates**: Omit invalid sibling wildcard names from two-label host certificates and regenerate cached certificates that contain them, fixing TLS rejection on Apple platforms. (#491)
+- **Proxy error responses**: Return JSON for portless-generated 404, 502, and 508 errors when the client does not accept HTML. (#485)
+- **Port validation**: Reject malformed port values instead of accepting leading digits across CLI flags, environment variables, aliases, and service configuration. (#493)
+
+### Contributors
+
+- @lahfir
+- @BlvckParrot
+- @BetterAndBetterII
+
+<!-- release:end -->
+
+## 0.15.9
 
 ### New Features
 
@@ -18,8 +34,6 @@
 
 - @lahfir
 - @kumburovicbranko682-boop
-
-<!-- release:end -->
 
 ## 0.15.8
 
