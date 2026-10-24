@@ -1588,6 +1588,7 @@ type FrameworkSpec = {
   defaultIsServer: boolean;
   positionalRootIsServer?: boolean;
   valueFlags?: string[];
+  hostFlag?: string;
 };
 
 const FRAMEWORKS_NEEDING_PORT: Record<string, FrameworkSpec> = {
@@ -1679,6 +1680,12 @@ const FRAMEWORKS_NEEDING_PORT: Record<string, FrameworkSpec> = {
   ng: { strictPort: false, serverSubcommands: ["serve", "dev", "s"], defaultIsServer: false },
   "react-native": { strictPort: false, serverSubcommands: ["start"], defaultIsServer: false },
   expo: { strictPort: false, serverSubcommands: ["start", "serve"], defaultIsServer: true },
+  wrangler: {
+    strictPort: false,
+    serverSubcommands: ["dev"],
+    defaultIsServer: false,
+    hostFlag: "--ip",
+  },
 };
 
 type PackageRunnerSpec = {
@@ -1901,14 +1908,15 @@ export function injectFrameworkFlags(commandArgs: string[], port: number): strin
     }
   }
 
+  const hostFlag = framework.hostFlag ?? "--host";
   const hasHostChoice =
-    hasCliOption(frameworkArgs, "--host") ||
+    hasCliOption(frameworkArgs, hostFlag) ||
     (basename === "expo" &&
       ["--localhost", "--lan", "--tunnel"].some((option) => hasCliOption(frameworkArgs, option)));
   if (!hasHostChoice) {
     const isExpoLan = basename === "expo" && isLanEnvEnabled();
     if (!isExpoLan) {
-      flags.push("--host", basename === "expo" ? "localhost" : "127.0.0.1");
+      flags.push(hostFlag, basename === "expo" ? "localhost" : "127.0.0.1");
     }
   }
 
