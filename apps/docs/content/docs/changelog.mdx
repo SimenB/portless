@@ -2,6 +2,20 @@
 title: "Changelog"
 ---
 
+## 0.15.11
+
+### Bug Fixes
+
+- **Static aliases**: Allow `--force` to replace a static alias without treating it as a running process, and explain when the alias must be re-added
+- **Configuration source**: Report whether the configured app name came from `package.json` or `portless.json`
+- **Route liveness**: Keep live routes when the current user lacks permission to signal their processes
+- **Tailscale ports**: Account for ports held by foreground serve and funnel sessions when assigning HTTPS ports
+- **Astro global options**: Inject the assigned port and host when global options appear before the Astro subcommand
+- **Certificate scope**: Reject TLS server names outside the configured TLDs or with invalid hostname characters, and limit new macOS CA trust to SSL
+- **Certificate clock skew**: Backdate CA, server, and host certificates by five minutes on OpenSSL 3.4 or newer so clients with slightly slower clocks can connect
+- **Windows helper processes**: Hide console windows for OpenSSL and other helper commands when running without a terminal
+- **Backend failures**: Drain the remaining request body after a backend error so client connections do not stall
+
 ## 0.15.10
 
 ### Bug Fixes
