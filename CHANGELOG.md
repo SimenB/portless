@@ -1,8 +1,34 @@
 # Changelog
 
-## 0.15.11
+## 0.15.12
 
 <!-- release:start -->
+
+### New Features
+
+- **MCP server**: Added `portless mcp` with tool profiles for route lookup, static aliases, proxy management, and diagnostics. (#513)
+- **VitePress support**: Inject the assigned port and bind address for VitePress dev, serve, and preview commands. (#508)
+- **Wrangler support**: Inject the assigned port and `--ip` bind address for `wrangler dev`. (#509)
+
+### Bug Fixes
+
+- **npm exec framework flags**: Pass injected framework options through `npm exec` and `npm x` after npm's option separator, while leaving ambiguous commands untouched. (#511)
+- **Misdirected requests**: Return 421 for hostnames outside the configured TLDs instead of showing the app list, using HTML or JSON to match the client. (#512)
+- **WSL-hosted containers**: Use the Linux trust store in containers that inherit a WSL2 kernel without Windows integration tools. (#507)
+
+### Contributors
+
+- @lahfir
+- @ericclemmons
+- @KennyMcSimpson
+- @alistair3149
+- @corvus-vardelabs
+- @desilvakai
+- @tlq5l
+
+<!-- release:end -->
+
+## 0.15.11
 
 ### Bug Fixes
 
@@ -25,8 +51,6 @@
 - @gyanu2507
 - @snomiao
 - @arturo-tikamaru
-
-<!-- release:end -->
 
 ## 0.15.10
 
