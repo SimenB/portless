@@ -225,6 +225,29 @@ export function getProxyBindTargets(lanMode: boolean, unprivileged = false): Pro
 }
 
 /**
+ * Check whether this process may bind `port` on every target without root.
+ * Resolves false only when a bind fails with EACCES (or EPERM), so callers can
+ * elevate for that case alone. Any other outcome, such as EADDRINUSE, resolves
+ * true and is left for the real listen to report.
+ */
+export async function canBindProxyPort(
+  port: number,
+  targets: readonly ProxyBindTarget[]
+): Promise<boolean> {
+  for (const target of targets) {
+    const code = await new Promise<string | null>((resolve) => {
+      const probe = net.createServer();
+      probe.once("error", (err: NodeJS.ErrnoException) => resolve(err.code ?? "UNKNOWN"));
+      probe.listen({ port, host: target.host, ipv6Only: target.ipv6Only, exclusive: true }, () =>
+        probe.close(() => resolve(null))
+      );
+    });
+    if (code === "EACCES" || code === "EPERM") return false;
+  }
+  return true;
+}
+
+/**
  * Whether this process can bind `port` without root on `platform`. macOS
  * allows any port on the wildcard address since Mojave. Linux moves the
  * boundary with `net.ipv4.ip_unprivileged_port_start`. Windows has none.
