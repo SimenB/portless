@@ -7,6 +7,7 @@ import {
   isProcessAlive,
   parseHostname,
   parseHostnames,
+  parsePort,
   resolveUserHome,
 } from "./utils.js";
 
@@ -387,5 +388,31 @@ describe("parseHostnames", () => {
 
   it("still throws when no TLD survives", () => {
     expect(() => parseHostnames("my..app", ["localhost", "test"])).toThrow(/consecutive dots/);
+  });
+});
+
+describe("parsePort", () => {
+  it("accepts whole numbers from 1 to 65535", () => {
+    expect(parsePort("1")).toBe(1);
+    expect(parsePort("8123")).toBe(8123);
+    expect(parsePort("65535")).toBe(65535);
+    expect(parsePort(" 3000 ")).toBe(3000);
+  });
+
+  it("rejects out of range and malformed values", () => {
+    for (const value of [
+      "",
+      "0",
+      "65536",
+      "192.168.1.1:8123",
+      "8123abc",
+      "81.23",
+      "1e3",
+      "30 00",
+      "3000abc",
+      "-1",
+    ]) {
+      expect(parsePort(value)).toBeNull();
+    }
   });
 });

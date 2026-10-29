@@ -22,6 +22,7 @@ import {
   isProcessAlive as isPidAlive,
   parseHostname,
   parseHostnames,
+  parsePort,
 } from "./utils.js";
 import {
   checkHostResolution,
@@ -70,6 +71,10 @@ import {
   getDefaultPort,
   getDefaultTlds,
   getProxyBindTargets,
+  canBindWithoutRoot,
+  isUnprivilegedEnvEnabled,
+  readUnprivilegedMarker,
+  writeUnprivilegedMarker,
   getRiskyTldReason,
   injectFrameworkFlags,
   injectPackageScriptFrameworkFlags,
@@ -124,7 +129,7 @@ import {
   loadPackagePortlessConfig,
   ConfigValidationError,
 } from "./config.js";
-import type { AppConfig } from "./config.js";
+import type { AppConfig, LoadedConfig } from "./config.js";
 import { findWorkspaceRoot, discoverWorkspacePackages } from "./workspace.js";
 import type { WorkspacePackage } from "./workspace.js";
 import {
@@ -136,6 +141,7 @@ import {
 } from "./turbo.js";
 import type { ManifestEntry } from "./turbo.js";
 import { buildServiceUninstallSudoArgs, handleService, tryUninstallService } from "./service.js";
+import { runMcp } from "./mcp.js";
 
 const chalk = colors;
 
@@ -165,6 +171,7 @@ type ProxyConfigExplicitness = {
   lanIp: boolean;
   tlds: boolean;
   useWildcard: boolean;
+  unprivileged: boolean;
 };
 
 type ProxyConfig = {
@@ -177,6 +184,8 @@ type ProxyConfig = {
   tld: string;
   tlds: string[];
   useWildcard: boolean;
+  /** Bind the wildcard address, accept loopback peers only, never elevate. */
+  unprivileged: boolean;
 };
 
 function normalizeTlds(tlds: readonly string[]): string[] {
@@ -207,11 +216,13 @@ function defaultProxyConfig(
     tld: primaryTld(effectiveTlds),
     tlds: effectiveTlds,
     useWildcard: false,
+    unprivileged: false,
   };
 }
 
 function resolveProxyConfig(options: {
   persistedLanMode: boolean;
+  persistedUnprivileged: boolean;
   explicit: ProxyConfigExplicitness;
   defaultTlds: string[];
   useHttps: boolean;
@@ -221,6 +232,7 @@ function resolveProxyConfig(options: {
   lanIp: string | null;
   tlds: string[];
   useWildcard: boolean;
+  unprivileged: boolean;
 }): ProxyConfig {
   const config = defaultProxyConfig(
     options.defaultTlds,
@@ -269,6 +281,18 @@ function resolveProxyConfig(options: {
     config.useWildcard = options.useWildcard;
   }
 
+  // Like LAN mode, a stopped unprivileged proxy keeps its mode for the next
+  // start through proxy.unprivileged unless PORTLESS_UNPRIVILEGED overrides it.
+  config.unprivileged = options.explicit.unprivileged
+    ? options.unprivileged
+    : options.persistedUnprivileged;
+
+  // Unprivileged mode promises no prompt of any kind, and trusting a
+  // generated CA is one. So it serves plain HTTP unless HTTPS was asked for.
+  if (config.unprivileged && !options.explicit.useHttps && !options.explicit.customCert) {
+    config.useHttps = false;
+  }
+
   if (!config.lanMode) {
     config.lanIp = null;
     config.lanIpExplicit = false;
@@ -305,6 +329,7 @@ function readCurrentProxyConfig(dir: string): ProxyConfig {
     tld,
     tlds,
     useWildcard: false,
+    unprivileged: readUnprivilegedMarker(dir),
   };
 }
 
@@ -337,6 +362,14 @@ function getProxyConfigMismatchMessages(
     );
   }
 
+  if (explicit.unprivileged && desiredConfig.unprivileged !== actualConfig.unprivileged) {
+    messages.push(
+      desiredConfig.unprivileged
+        ? "requested unprivileged mode, but the running proxy was started with elevation"
+        : "requested elevated mode, but the running proxy is unprivileged"
+    );
+  }
+
   if (
     explicit.tlds &&
     (desiredConfig.tlds.length !== actualConfig.tlds.length ||
@@ -351,7 +384,7 @@ function getProxyConfigMismatchMessages(
 }
 
 function formatProxyStartCommand(proxyPort: number, config: ProxyConfig): string {
-  const needsSudo = !isWindows && proxyPort < PRIVILEGED_PORT_THRESHOLD;
+  const needsSudo = !isWindows && proxyPort < PRIVILEGED_PORT_THRESHOLD && !config.unprivileged;
   const { args } = buildProxyStartConfig({
     useHttps: config.useHttps,
     customCertPath: config.customCertPath,
@@ -362,6 +395,7 @@ function formatProxyStartCommand(proxyPort: number, config: ProxyConfig): string
     tld: config.tld,
     tlds: config.tlds,
     useWildcard: config.useWildcard,
+    unprivileged: config.unprivileged,
     includePort: proxyPort !== getDefaultPort(config.useHttps),
     proxyPort,
   });
@@ -373,7 +407,8 @@ function printProxyConfigMismatch(
   desiredConfig: ProxyConfig,
   messages: string[]
 ): never {
-  const needsSudo = !isWindows && proxyPort < PRIVILEGED_PORT_THRESHOLD;
+  const needsSudo =
+    !isWindows && proxyPort < PRIVILEGED_PORT_THRESHOLD && !desiredConfig.unprivileged;
   const portFlag = proxyPort !== getDefaultPort(desiredConfig.useHttps) ? ` -p ${proxyPort}` : "";
   console.error(
     chalk.yellow(`Proxy is already running on port ${proxyPort} with a different config.`)
@@ -639,7 +674,8 @@ function startProxyServer(
   tlsOptions?: { cert: Buffer; key: Buffer },
   lanIp?: string | null,
   strict?: boolean,
-  customCert = false
+  customCert = false,
+  unprivileged = false
 ): void {
   store.ensureDir();
 
@@ -647,8 +683,11 @@ function startProxyServer(
   const mdnsSupport = isMdnsSupported();
   let activeLanIp = lanIp && mdnsSupport.supported ? lanIp : null;
   const lanModeActive = activeLanIp !== null;
-  const bindTargets = getProxyBindTargets(lanModeActive);
+  const bindTargets = getProxyBindTargets(lanModeActive, unprivileged);
   const primaryBindTarget = bindTargets[0]!;
+  // LAN mode wants remote peers; unprivileged mode binds the same addresses
+  // only to get the port, so it keeps the proxy loopback-only itself.
+  const loopbackOnly = unprivileged && !lanModeActive;
   const lanIpPinned = !!process.env.PORTLESS_LAN_IP;
   let lanMonitor: ReturnType<typeof startLanIpMonitor> | null = null;
   if (lanIp && !mdnsSupport.supported) {
@@ -674,7 +713,9 @@ function startProxyServer(
   let watcher: fs.FSWatcher | null = null;
   let pollingInterval: ReturnType<typeof setInterval> | null = null;
 
-  const autoSyncHosts = shouldAutoSyncHosts(process.env.PORTLESS_SYNC_HOSTS);
+  // Writing the hosts file needs root, which unprivileged mode never has, so
+  // it does not try; `proxy start` refuses an explicit PORTLESS_SYNC_HOSTS=1.
+  const autoSyncHosts = !unprivileged && shouldAutoSyncHosts(process.env.PORTLESS_SYNC_HOSTS);
   const hostsSyncToken = generateHostsSyncToken();
 
   const onMdnsError = (msg: string) => console.warn(chalk.yellow(msg));
@@ -791,6 +832,7 @@ function startProxyServer(
       tld,
       tlds,
       strict,
+      loopbackOnly,
       onError: (msg) => console.error(colors.red(msg)),
       onHostsSyncRequest,
       hostsSyncToken,
@@ -834,7 +876,7 @@ function startProxyServer(
 
   const proto = isTls ? "HTTPS/2" : "HTTP";
   const tldLabel = tlds.length > 1 || tld !== DEFAULT_TLD ? ` (TLDs: ${formatTldList(tlds)})` : "";
-  const modeLabel = strict === false ? " (wildcard)" : "";
+  const modeLabel = `${strict === false ? " (wildcard)" : ""}${loopbackOnly ? " (unprivileged, loopback peers only)" : ""}`;
 
   for (const bindTarget of bindTargets.slice(1)) {
     const additionalServer = createServer();
@@ -863,7 +905,7 @@ function startProxyServer(
   // proxy on 443 still works; users just won't get automatic redirects).
   if (isTls && proxyPort !== 80) {
     for (const bindTarget of bindTargets) {
-      const redirectServer = createHttpRedirectServer(proxyPort);
+      const redirectServer = createHttpRedirectServer(proxyPort, loopbackOnly);
       redirectServers.add(redirectServer);
       redirectServer.on("error", () => {
         redirectServers.delete(redirectServer);
@@ -889,6 +931,7 @@ function startProxyServer(
     writeCustomCertMarker(store.dir, isTls && customCert);
     writeTldsFile(store.dir, tlds);
     writeLanMarker(store.dir, activeLanIp);
+    writeUnprivilegedMarker(store.dir, unprivileged);
     fixOwnership(store.dir, store.pidPath, store.portFilePath);
     console.log(
       colors.green(
@@ -1159,9 +1202,11 @@ function resolveProxyDesiredState(lanMode: boolean): ProxyDesiredState {
     lanIp: process.env.PORTLESS_LAN_IP !== undefined,
     tlds: process.env.PORTLESS_TLD !== undefined,
     useWildcard: process.env.PORTLESS_WILDCARD !== undefined,
+    unprivileged: process.env.PORTLESS_UNPRIVILEGED !== undefined,
   };
   const desiredConfig = resolveProxyConfig({
     persistedLanMode: lanMode,
+    persistedUnprivileged: readUnprivilegedMarker(resolveStateDir()),
     explicit,
     defaultTlds: envTlds,
     useHttps: !isHttpsEnvDisabled(),
@@ -1171,6 +1216,7 @@ function resolveProxyDesiredState(lanMode: boolean): ProxyDesiredState {
     lanIp: process.env.PORTLESS_LAN_IP || null,
     tlds: envTlds,
     useWildcard: isWildcardEnvEnabled(),
+    unprivileged: isUnprivilegedEnvEnabled(),
   });
   return { explicit, desiredConfig, envTld, envTlds };
 }
@@ -1214,6 +1260,9 @@ async function ensureProxyRunning(
     if (!explicit.lanMode && persisted.lanMode !== desiredConfig.lanMode) {
       startConfig.lanMode = persisted.lanMode;
     }
+    if (!explicit.unprivileged && persisted.unprivileged !== desiredConfig.unprivileged) {
+      startConfig.unprivileged = persisted.unprivileged;
+    }
     const envPort = getDefaultPort(startConfig.useHttps);
     if (persisted.port !== envPort) {
       startPort = persisted.port;
@@ -1221,7 +1270,8 @@ async function ensureProxyRunning(
   }
 
   const effectivePort = startPort ?? getDefaultPort(startConfig.useHttps);
-  const needsSudo = !isWindows && effectivePort < PRIVILEGED_PORT_THRESHOLD;
+  const needsSudo =
+    !isWindows && effectivePort < PRIVILEGED_PORT_THRESHOLD && !startConfig.unprivileged;
   const manualStartCommand = formatProxyStartCommand(effectivePort, startConfig);
   const fallbackStartCommand = formatProxyStartCommand(FALLBACK_PROXY_PORT, startConfig);
 
@@ -1251,6 +1301,7 @@ async function ensureProxyRunning(
     tld: startConfig.tld,
     tlds: startConfig.tlds,
     useWildcard: startConfig.useWildcard,
+    unprivileged: startConfig.unprivileged,
     includePort: startPort !== undefined,
     proxyPort: startPort,
   });
@@ -1730,8 +1781,8 @@ function parseAppPort(value: string | undefined): number {
     console.error(colors.red("Error: --app-port requires a port number."));
     process.exit(1);
   }
-  const port = parseInt(value, 10);
-  if (isNaN(port) || port < 1 || port > 65535) {
+  const port = parsePort(value);
+  if (port === null) {
     console.error(colors.red(`Error: Invalid app port "${value}". Must be 1-65535.`));
     process.exit(1);
   }
@@ -1741,8 +1792,8 @@ function parseAppPort(value: string | undefined): number {
 function appPortFromEnv(): number | undefined {
   const envVal = process.env.PORTLESS_APP_PORT;
   if (!envVal) return undefined;
-  const port = parseInt(envVal, 10);
-  if (isNaN(port) || port < 1 || port > 65535) {
+  const port = parsePort(envVal);
+  if (port === null) {
     console.error(colors.red(`Error: Invalid PORTLESS_APP_PORT="${envVal}". Must be 1-65535.`));
     process.exit(1);
   }
@@ -1961,6 +2012,7 @@ ${colors.bold("Usage:")}
   ${colors.cyan("portless <name> <cmd>")}            Run with an explicit app name
   ${colors.cyan("portless proxy start")}             Start the proxy (HTTPS on port 443, daemon); rarely needed since it auto-starts on first run
   ${colors.cyan("portless proxy stop")}              Stop the proxy
+  ${colors.cyan("portless mcp [--tools <profiles>]")} Start the stdio MCP server
   ${colors.cyan("portless service install")}         Start proxy automatically when the OS starts
   ${colors.cyan("portless get <name>")}              Print URL for a service (for cross-service refs)
   ${colors.cyan("portless alias <name> <port>")}     Register a static route (e.g. for Docker)
@@ -2015,13 +2067,14 @@ ${colors.bold("How it works:")}
      (apps get a random port in the 4000-4999 range via PORT)
   3. Access via https://<name>.localhost
   4. .localhost domains auto-resolve to 127.0.0.1
-  5. Frameworks that ignore PORT (Vite, VitePlus, Astro, React Router, Angular,
-     Expo, React Native) get --port and, when needed, --host flags
-     injected automatically, including through a package script whose command
-     starts with the framework. Only server commands (dev, serve, preview,
-     start, a bare vite, or vite [root]) get them; build, optimize, test and
-     the like reject them, and an invocation portless cannot classify is left
-     alone too. Expo --localhost, --lan and --tunnel modes are preserved while
+  5. Frameworks that ignore PORT (Vite, VitePlus, VitePress, Astro, React
+     Router, Angular, Expo, React Native, Wrangler) get --port and, when
+     needed, --host flags injected automatically (--ip for Wrangler),
+     including through a package script whose command starts with the
+     framework. Only server commands (dev, serve, preview, start, a bare
+     vite, or vite [root]) get them; build, optimize, test and the like
+     reject them, and an invocation portless cannot classify is left alone
+     too. Expo --localhost, --lan and --tunnel modes are preserved while
      the assigned port is still injected.
      Portless also leaves a script alone when it is
      compound (&&, |, ;), ends in a # comment, ends its own option list with
@@ -2029,6 +2082,8 @@ ${colors.bold("How it works:")}
      script, or is invoked with runner flags before the script name
      (bun run --bun dev); set the port in those yourself
   6. The proxy listens only on 127.0.0.1 and ::1 unless LAN mode is enabled
+  7. Proxy errors (404, 421 misdirected, 502, 508) are an HTML page for browsers and JSON
+     ({"error","upstream","message"}) for clients that do not accept text/html
   Elevated proxy processes keep the invoking user's ~/.portless state directory.
 
 ${colors.bold("HTTP/2 + HTTPS (default):")}
@@ -2038,6 +2093,7 @@ ${colors.bold("HTTP/2 + HTTPS (default):")}
   On first use, portless generates a local CA and adds it to your
   system trust store. No browser warnings. Disable with --no-tls.
   On WSL, portless also adds the CA to the Windows user certificate store.
+  Linux containers on a WSL2 host use only the Linux trust store.
 
 ${colors.bold("LAN mode:")}
   Use --lan to make services accessible from other devices (phones,
@@ -2083,6 +2139,12 @@ ${colors.bold("Options:")}
   --script <name>               Run a specific package.json script (default: dev)
   -p, --port <number>           Port for the proxy (default: 443, or 80 with --no-tls)
                                 Standard ports auto-elevate with sudo on macOS/Linux
+                                unless --unprivileged is set
+  --unprivileged                Take a port below 1024 without sudo: bind the wildcard
+                                address and accept loopback peers only. Serves plain
+                                HTTP on port 80 unless --https is also given, and
+                                never writes the hosts file. Remembered after
+                                stop; PORTLESS_UNPRIVILEGED=0 switches back
   --no-tls                      Disable HTTPS (use plain HTTP on port 80)
   --https                       Enable HTTPS (default, accepted for compatibility)
   --lan                         Enable LAN mode (mDNS .local, for real device testing)
@@ -2111,6 +2173,7 @@ ${colors.bold("Environment variables:")}
   PORTLESS_LAN_IP=<address>     Pin a specific LAN IP for LAN mode
   PORTLESS_TLD=<tld>[,<tld>]    Use one or more TLDs (e.g. localhost,test,dev.example.com)
   PORTLESS_WILDCARD=1           Allow unregistered subdomains to fall back to the most specific parent route
+  PORTLESS_UNPRIVILEGED=1       Take a port below 1024 without sudo (same as --unprivileged)
   PORTLESS_SYNC_HOSTS=0         Disable auto-sync of ${HOSTS_DISPLAY} (on by default)
   PORTLESS_TAILSCALE=1          Share apps on your Tailscale network (same as --tailscale)
   PORTLESS_TAILSCALE_HTTP=1     Share on the tailnet over plain HTTP (same as --tailscale-http)
@@ -2148,7 +2211,7 @@ ${colors.bold("Skip portless:")}
   PORTLESS=0 pnpm dev           # Runs command directly without proxy
 
 ${colors.bold("Reserved names:")}
-  run, get, alias, hosts, list, doctor, trust, clean, prune, proxy, service are subcommands and
+  run, get, alias, hosts, list, doctor, trust, clean, prune, proxy, service, mcp are subcommands and
   cannot be used as app names directly. Use "portless run" to infer the name,
   or "portless --name <name>" to force any name including reserved ones.
 `);
@@ -2556,8 +2619,8 @@ ${colors.bold("Examples:")}
   }
 
   const hostnames = buildHostnames(aliasName, tlds);
-  const port = parseInt(aliasPort, 10);
-  if (isNaN(port) || port < 1 || port > 65535) {
+  const port = parsePort(aliasPort);
+  if (port === null) {
     console.error(colors.red(`Error: Invalid port "${aliasPort}". Must be 1-65535.`));
     process.exit(1);
   }
@@ -3082,10 +3145,13 @@ async function handleProxy(args: string[]): Promise<void> {
     if (portIdx !== -1) {
       const portValue = args[portIdx + 1];
       if (portValue && !portValue.startsWith("-")) {
-        const parsed = parseInt(portValue, 10);
-        if (!isNaN(parsed) && parsed >= 1 && parsed <= 65535) {
-          explicitPort = parsed;
+        const parsed = parsePort(portValue);
+        if (parsed === null) {
+          console.error(colors.red(`Error: Invalid port number: ${portValue}`));
+          console.error(colors.blue("Port must be between 1 and 65535."));
+          process.exit(1);
         }
+        explicitPort = parsed;
       }
     }
 
@@ -3116,6 +3182,7 @@ ${colors.bold("Usage:")}
   ${colors.cyan("portless proxy start --lan")}          Enable LAN mode (mDNS, .local TLD)
   ${colors.cyan("portless proxy start --foreground")}   Start in foreground (for debugging)
   ${colors.cyan("portless proxy start -p 1355")}        Start on a custom port (no sudo)
+  ${colors.cyan("portless proxy start --unprivileged")}  Plain HTTP on port 80, no sudo, nothing installed
   ${colors.cyan("portless proxy start --tld test")}     Use .test instead of .localhost
   ${colors.cyan("portless proxy start --tld localhost --tld test")}  Serve both TLDs
   ${colors.cyan("portless proxy start --tld dev.example.com")}  Use a multi-segment TLD (production parity)
@@ -3137,6 +3204,7 @@ ${colors.bold("LAN mode (--lan):")}
 
   const isForeground = args.includes("--foreground");
   const skipTrust = args.includes("--skip-trust");
+  const hasUnprivilegedFlag = args.includes("--unprivileged");
 
   // HTTPS is on by default. Disable with --no-tls or PORTLESS_HTTPS=0.
   const hasHttpsFlag = args.includes("--https");
@@ -3184,12 +3252,13 @@ ${colors.bold("LAN mode (--lan):")}
       console.error(colors.cyan("  portless proxy start -p 8080"));
       process.exit(1);
     }
-    proxyPort = parseInt(portValue, 10);
-    if (isNaN(proxyPort) || proxyPort < 1 || proxyPort > 65535) {
+    const parsed = parsePort(portValue);
+    if (parsed === null) {
       console.error(colors.red(`Error: Invalid port number: ${portValue}`));
       console.error(colors.blue("Port must be between 1 and 65535."));
       process.exit(1);
     }
+    proxyPort = parsed;
     hasExplicitPort = true;
   }
 
@@ -3239,6 +3308,7 @@ ${colors.bold("LAN mode (--lan):")}
     lanIp: process.env.PORTLESS_LAN_IP !== undefined,
     tlds: tldFlagValues.length > 0 || process.env.PORTLESS_TLD !== undefined,
     useWildcard: args.includes("--wildcard") || process.env.PORTLESS_WILDCARD !== undefined,
+    unprivileged: hasUnprivilegedFlag || process.env.PORTLESS_UNPRIVILEGED !== undefined,
   };
 
   // Resolve state directory based on the port
@@ -3259,6 +3329,7 @@ ${colors.bold("LAN mode (--lan):")}
   }
   const desiredConfig = resolveProxyConfig({
     persistedLanMode,
+    persistedUnprivileged: readUnprivilegedMarker(stateDir),
     explicit,
     defaultTlds: getDefaultTlds(),
     useHttps: wantHttps || !!(customCertPath && customKeyPath),
@@ -3268,6 +3339,7 @@ ${colors.bold("LAN mode (--lan):")}
     lanIp: process.env.PORTLESS_LAN_IP || null,
     tlds,
     useWildcard,
+    unprivileged: hasUnprivilegedFlag || isUnprivilegedEnvEnabled(),
   });
   const lanMode = desiredConfig.lanMode;
   useHttps = desiredConfig.useHttps;
@@ -3276,6 +3348,7 @@ ${colors.bold("LAN mode (--lan):")}
   tld = desiredConfig.tld;
   tlds = desiredConfig.tlds;
   const desiredWildcard = desiredConfig.useWildcard;
+  const desiredUnprivileged = desiredConfig.unprivileged;
   let lanIp: string | null = desiredConfig.lanIpExplicit ? desiredConfig.lanIp : null;
 
   if (!hasExplicitPort && runningPort === null) {
@@ -3301,8 +3374,28 @@ ${colors.bold("LAN mode (--lan):")}
     }
   }
 
+  const syncExplicitlyOn =
+    process.env.PORTLESS_SYNC_HOSTS === "1" || process.env.PORTLESS_SYNC_HOSTS === "true";
+  if (desiredUnprivileged && syncExplicitlyOn) {
+    console.error(
+      colors.red("Error: PORTLESS_SYNC_HOSTS=1 cannot be combined with unprivileged mode.")
+    );
+    console.error(
+      colors.blue(`Writing ${HOSTS_DISPLAY} needs root, which unprivileged mode never asks for.`)
+    );
+    console.error(
+      colors.blue(
+        "Unset PORTLESS_SYNC_HOSTS, or start without --unprivileged. To add entries once:"
+      )
+    );
+    console.error(colors.cyan("  portless hosts sync"));
+    process.exit(1);
+  }
+
   const syncDisabled =
-    process.env.PORTLESS_SYNC_HOSTS === "0" || process.env.PORTLESS_SYNC_HOSTS === "false";
+    desiredUnprivileged ||
+    process.env.PORTLESS_SYNC_HOSTS === "0" ||
+    process.env.PORTLESS_SYNC_HOSTS === "false";
   const nonDefaultTlds = tlds.filter((configuredTld) => configuredTld !== DEFAULT_TLD);
   if (nonDefaultTlds.length > 0 && !lanMode && syncDisabled) {
     console.warn(
@@ -3383,11 +3476,32 @@ ${colors.bold("LAN mode (--lan):")}
     tld,
     tlds,
     useWildcard: desiredWildcard,
+    unprivileged: desiredUnprivileged,
   };
+
+  const isRoot = (process.getuid?.() ?? -1) === 0;
+
+  // Unprivileged mode never elevates and never falls back to another port:
+  // either the platform lets this process bind the port, or we say exactly
+  // what to change and stop (scripted runs must not get a different URL).
+  if (desiredUnprivileged && !isWindows && !isRoot) {
+    const check = canBindWithoutRoot(proxyPort);
+    if (!check.ok) {
+      console.error(colors.red(`Error: ${check.reason}`));
+      if (process.platform === "linux") {
+        console.error(colors.blue("Allow it once per machine:"));
+        console.error(
+          colors.cyan(`  sudo sysctl -w net.ipv4.ip_unprivileged_port_start=${proxyPort}`)
+        );
+      }
+      console.error(colors.blue("Or start without --unprivileged to elevate with sudo."));
+      process.exit(1);
+    }
+  }
 
   // Privileged ports require root on Unix. Auto-elevate with sudo when
   // possible, falling back to the unprivileged port when sudo is unavailable.
-  if (!isWindows && proxyPort < PRIVILEGED_PORT_THRESHOLD && (process.getuid?.() ?? -1) !== 0) {
+  if (!isWindows && !desiredUnprivileged && proxyPort < PRIVILEGED_PORT_THRESHOLD && !isRoot) {
     const startArgs = [
       process.execPath,
       getEntryScript(),
@@ -3510,7 +3624,16 @@ ${colors.bold("LAN mode (--lan):")}
         console.log(colors.green("Generated local CA certificate."));
       }
 
-      if (!skipTrust && !isCATrusted(stateDir)) {
+      if (desiredUnprivileged && !isCATrusted(stateDir)) {
+        // Installing the CA elevates, which this mode never does.
+        console.warn(colors.yellow("The portless CA is not in the system trust store."));
+        console.warn(
+          colors.yellow(
+            "Browsers will show certificate warnings. Trust it once (asks for admin rights):"
+          )
+        );
+        console.warn(colors.cyan("  portless trust"));
+      } else if (!skipTrust && !isCATrusted(stateDir)) {
         console.log(colors.yellow("Adding CA to system trust store..."));
         const trustResult = trustCA(stateDir);
         if (trustResult.trusted) {
@@ -3552,7 +3675,8 @@ ${colors.bold("LAN mode (--lan):")}
       tlsOptions,
       lanIp,
       desiredWildcard ? false : undefined,
-      !!(customCertPath && customKeyPath)
+      !!(customCertPath && customKeyPath),
+      desiredUnprivileged
     );
     return;
   }
@@ -3583,6 +3707,7 @@ ${colors.bold("LAN mode (--lan):")}
         tld,
         tlds,
         useWildcard: desiredWildcard,
+        unprivileged: desiredUnprivileged,
         foreground: true,
         includePort: true,
         proxyPort,
@@ -3624,15 +3749,18 @@ ${colors.bold("LAN mode (--lan):")}
   }
 }
 
+type AppConfigWithSource = AppConfig & { source: LoadedConfig["source"] };
+
 /**
- * Load the effective AppConfig for the current directory from portless.json.
+ * Load the effective AppConfig for the current directory from portless.json or
+ * the package.json "portless" key, tagged with the file it came from.
  * Handles both single-app (top-level fields) and monorepo (apps map) configs.
  */
-function loadAppConfig(cwd: string = process.cwd()): AppConfig | null {
+function loadAppConfig(cwd: string = process.cwd()): AppConfigWithSource | null {
   try {
     const loaded = loadConfig(cwd);
     if (!loaded) return null;
-    return resolveAppConfig(loaded.config, loaded.configDir, cwd);
+    return { ...resolveAppConfig(loaded.config, loaded.configDir, cwd), source: loaded.source };
   } catch (err) {
     if (err instanceof ConfigValidationError) {
       console.error(colors.red(`Error: ${err.message}`));
@@ -3697,7 +3825,7 @@ async function handleDefaultMode(
 async function handleDefaultSingle(
   cwd: string,
   scriptName: string,
-  appConfig: AppConfig | null
+  appConfig: AppConfigWithSource | null
 ): Promise<void> {
   const resolved = resolveScriptCommand(scriptName, cwd);
   if (!resolved) {
@@ -3713,7 +3841,7 @@ async function handleDefaultSingle(
       .split(".")
       .map((label) => truncateLabel(label))
       .join(".");
-    nameSource = "portless.json";
+    nameSource = appConfig.source;
   } else {
     const inferred = inferProjectName(cwd);
     baseName = inferred.name;
@@ -4325,7 +4453,7 @@ async function handleRunMode(args: string[], globalScript?: string): Promise<voi
       .split(".")
       .map((label) => truncateLabel(label))
       .join(".");
-    nameSource = "portless.json";
+    nameSource = appConfig.source;
   } else {
     const inferred = inferProjectName();
     baseName = inferred.name;
@@ -4434,6 +4562,11 @@ async function main() {
     console.error(colors.cyan("  npm install -g portless"));
     console.error(colors.cyan("  npm install -D portless"));
     process.exit(1);
+  }
+
+  if (args[0] === "mcp") {
+    await runMcp(args.slice(1));
+    return;
   }
 
   const globalBooleanFlags = new Set([
@@ -4581,7 +4714,7 @@ async function main() {
 
   // --name flag: treat the next arg as an explicit app name, bypassing
   // subcommand dispatch. Useful when the app name collides with a reserved
-  // subcommand (run, alias, hosts, list, doctor, trust, clean, prune, proxy, service).
+  // subcommand (run, alias, hosts, list, doctor, trust, clean, prune, proxy, service, mcp).
   if (args[0] === "--name") {
     args.shift();
     if (!args[0]) {
